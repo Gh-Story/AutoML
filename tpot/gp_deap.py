@@ -28,10 +28,11 @@ from deap import tools, gp
 from inspect import isclass
 from .operator_utils import set_sample_weight
 from sklearn.utils import indexable
-from sklearn.metrics import check_scoring
+from sklearn.metrics.scorer import check_scoring
 from sklearn.model_selection._validation import _fit_and_score
+from sklearn.model_selection._split import check_cv
 
-from sklearn.base import clone
+from sklearn.base import clone, is_classifier
 from collections import defaultdict
 import warnings
 from stopit import threading_timeoutable, TimeoutException
@@ -171,8 +172,7 @@ def initialize_stats_dict(individual):
 
 
 def eaMuPlusLambda(population, toolbox, mu, lambda_, cxpb, mutpb, ngen, pbar,
-                   stats=None, halloffame=None, verbose=0,
-                   per_generation_function=None, log_file=None):
+                   stats=None, halloffame=None, verbose=0, per_generation_function=None):
     """This is the :math:`(\mu + \lambda)` evolutionary algorithm.
     :param population: A list of individuals.
     :param toolbox: A :class:`~deap.base.Toolbox` that contains the evolution
@@ -190,7 +190,6 @@ def eaMuPlusLambda(population, toolbox, mu, lambda_, cxpb, mutpb, ngen, pbar,
     :param verbose: Whether or not to log the statistics.
     :param per_generation_function: if supplied, call this function before each generation
                             used by tpot to save best pipeline before each new generation
-    :param log_file: io.TextIOWrapper or io.StringIO, optional (defaul: sys.stdout)
     :returns: The final population
     :returns: A class:`~deap.tools.Logbook` with the statistics of the
               evolution.
@@ -225,20 +224,23 @@ def eaMuPlusLambda(population, toolbox, mu, lambda_, cxpb, mutpb, ngen, pbar,
     for ind in population:
         initialize_stats_dict(ind)
 
-    population[:] = toolbox.evaluate(population)
+    population = toolbox.evaluate(population)
 
     record = stats.compile(population) if stats is not None else {}
     logbook.record(gen=0, nevals=len(population), **record)
 
     # Begin the generational process
     for gen in range(1, ngen + 1):
+        # after each population save a periodic pipeline
+        if per_generation_function is not None:
+            per_generation_function(gen)
         # Vary the population
         offspring = varOr(population, toolbox, lambda_, cxpb, mutpb)
 
 
         # Update generation statistic for all individuals which have invalid 'generation' stats
         # This hold for individuals that have been altered in the varOr function
-        for ind in offspring:
+        for ind in population:
             if ind.statistics['generation'] == 'INVALID':
                 ind.statistics['generation'] = gen
 
@@ -254,27 +256,20 @@ def eaMuPlusLambda(population, toolbox, mu, lambda_, cxpb, mutpb, ngen, pbar,
         if not pbar.disable:
             # Print only the best individual fitness
             if verbose == 2:
-                high_score = max(halloffame.keys[x].wvalues[1] \
-                    for x in range(len(halloffame.keys)))
-                pbar.write('\nGeneration {0} - Current '
-                            'best internal CV score: {1}'.format(gen,
-                                                        high_score),
-
-                            file=log_file)
+                high_score = max([halloffame.keys[x].wvalues[1] for x in range(len(halloffame.keys))])
+                pbar.write('Generation {0} - Current best internal CV score: {1}'.format(gen, high_score))
 
             # Print the entire Pareto front
             elif verbose == 3:
-                pbar.write('\nGeneration {} - '
-                            'Current Pareto front scores:'.format(gen),
-                            file=log_file)
+                pbar.write('Generation {} - Current Pareto front scores:'.format(gen))
                 for pipeline, pipeline_scores in zip(halloffame.items, reversed(halloffame.keys)):
-                    pbar.write('\n{}\t{}\t{}'.format(
+                    pbar.write('{}\t{}\t{}'.format(
                             int(pipeline_scores.wvalues[0]),
                             pipeline_scores.wvalues[1],
                             pipeline
-                        ),
-                        file=log_file
+                        )
                     )
+                pbar.write('')
 
         # after each population save a periodic pipeline
         if per_generation_function is not None:
@@ -351,7 +346,7 @@ def mutNodeReplacement(individual, pset):
         rindex = None
         if index + 1 < len(individual):
             for i, tmpnode in enumerate(individual[index + 1:], index + 1):
-                if isinstance(tmpnode, gp.Primitive) and tmpnode.ret in node.args:
+                if isinstance(tmpnode, gp.Primitive) and tmpnode.ret in tmpnode.args:
                     rindex = i
                     break
 
@@ -359,7 +354,6 @@ def mutNodeReplacement(individual, pset):
         # for example: if op.root is True then the node.ret is Output_DF object
         # based on the function _setup_pset. Then primitives is the list of classifor or regressor
         primitives = pset.primitives[node.ret]
-
         if len(primitives) != 0:
             new_node = np.random.choice(primitives)
             new_subtree = [None] * len(new_node.args)
@@ -382,7 +376,6 @@ def mutNodeReplacement(individual, pset):
             # combine with primitives
             new_subtree.insert(0, new_node)
             individual[slice_] = new_subtree
-
     return individual,
 
 
@@ -401,8 +394,11 @@ def _wrapped_cross_val_score(sklearn_pipeline, features, target,
     target : array-like, optional, default: None
         The target variable to try to predict in the case of
         supervised learning.
-    cv: cross-validation generator
-        Object to be used as a cross-validation generator.
+    cv: int or cross-validation generator
+        If CV is a number, then it is the number of folds to evaluate each
+        pipeline over in k-fold cross-validation during the TPOT optimization
+         process. If it is an object then it is an object to be used as a
+         cross-validation generator.
     scoring_function : callable
         A scorer callable object / function with signature
         ``scorer(estimator, X, y)``.
@@ -417,6 +413,7 @@ def _wrapped_cross_val_score(sklearn_pipeline, features, target,
 
     features, target, groups = indexable(features, target, groups)
 
+    cv = check_cv(cv, target, classifier=is_classifier(sklearn_pipeline))
     cv_iter = list(cv.split(features, target, groups))
     scorer = check_scoring(sklearn_pipeline, scoring=scoring_function)
 
@@ -425,8 +422,8 @@ def _wrapped_cross_val_score(sklearn_pipeline, features, target,
             import dask_ml.model_selection  # noqa
             import dask  # noqa
             from dask.delayed import Delayed
-        except Exception as e:
-            msg = "'use_dask' requires the optional dask and dask-ml depedencies.\n{}".format(e)
+        except ImportError:
+            msg = "'use_dask' requires the optional dask and dask-ml depedencies."
             raise ImportError(msg)
 
         dsk, keys, n_splits = dask_ml.model_selection._search.build_graph(
@@ -459,18 +456,10 @@ def _wrapped_cross_val_score(sklearn_pipeline, features, target,
                                          test=test,
                                          verbose=0,
                                          parameters=None,
-                                         error_score='raise',
                                          fit_params=sample_weight_dict)
                                     for train, test in cv_iter]
-                if isinstance(scores[0], list): #scikit-learn <= 0.23.2
-                    CV_score = np.array(scores)[:, 0]
-                elif isinstance(scores[0], dict): # scikit-learn >= 0.24
-                    from sklearn.model_selection._validation import _aggregate_score_dicts
-                    CV_score = _aggregate_score_dicts(scores)["test_scores"]
-                else:
-                    raise ValueError("Incorrect output format from _fit_and_score!")
-                CV_score_mean = np.nanmean(CV_score)
-            return CV_score_mean
+                CV_score = np.array(scores)[:, 0]
+                return np.nanmean(CV_score)
         except TimeoutException:
             return "Timeout"
         except Exception as e:

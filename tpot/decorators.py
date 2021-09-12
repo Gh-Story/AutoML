@@ -29,12 +29,7 @@ import warnings
 from .export_utils import expr_to_tree, generate_pipeline_code
 from deap import creator
 
-from stopit import threading_timeoutable, TimeoutException
-
-
 NUM_TESTS = 10
-MAX_EVAL_SECS = 10
-
 
 def _pre_test(func):
     """Check if the wrapped function works with a pretest data set.
@@ -52,10 +47,6 @@ def _pre_test(func):
     check_pipeline: function
         A wrapper function around the func parameter
     """
-    @threading_timeoutable(default="timeout")
-    def time_limited_call(func, *args):
-        func(*args)
-
     @wraps(func)
     def check_pipeline(self, *args, **kwargs):
         bad_pipeline = True
@@ -94,12 +85,7 @@ def _pre_test(func):
                     sklearn_pipeline = eval(pipeline_code, self.operators_context)
                     with warnings.catch_warnings():
                         warnings.simplefilter('ignore')
-                        time_limited_call(
-                            sklearn_pipeline.fit,
-                            self.pretest_X,
-                            self.pretest_y,
-                            timeout=MAX_EVAL_SECS,
-                        )
+                        sklearn_pipeline.fit(self.pretest_X, self.pretest_y)
 
                     bad_pipeline = False
             except BaseException as e:

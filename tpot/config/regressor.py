@@ -101,23 +101,11 @@ regressor_config_dict = {
         'learning_rate': [1e-3, 1e-2, 1e-1, 0.5, 1.],
         'subsample': np.arange(0.05, 1.01, 0.05),
         'min_child_weight': range(1, 21),
-        'n_jobs': [1],
-        'verbosity': [0],
+        'nthread': [1],
         'objective': ['reg:squarederror']
     },
 
-    'sklearn.linear_model.SGDRegressor': {
-        'loss': ['squared_loss', 'huber', 'epsilon_insensitive'],
-        'penalty': ['elasticnet'],
-        'alpha': [0.0, 0.01, 0.001] ,
-        'learning_rate': ['invscaling', 'constant'] ,
-        'fit_intercept': [True, False],
-        'l1_ratio': [0.25, 0.0, 1.0, 0.75, 0.5],
-        'eta0': [0.1, 1.0, 0.01],
-        'power_t': [0.5, 0.0, 1.0, 0.1, 100.0, 10.0, 50.0]
-    },
-
-    # Preprocessors
+    # Preprocesssors
     'sklearn.preprocessing.Binarizer': {
         'threshold': np.arange(0.0, 1.01, 0.05)
     },
